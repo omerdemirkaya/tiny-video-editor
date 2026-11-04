@@ -748,6 +748,7 @@ class App(tk.Tk):
             self._load_video(path)
 
     def _load_video(self, path):
+        path = os.path.abspath(path)    # renders run from a temp folder: never use relative paths
         if self.project and self.undo_stack and not messagebox.askyesno(
                 "Open another video", "Your changes to the current video will be lost. Continue?"):
             return
@@ -1173,7 +1174,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------- drag & drop
     def _on_drop(self, files, sx, sy):
-        files = [f for f in files if os.path.isfile(f)]
+        files = [os.path.abspath(f) for f in files if os.path.isfile(f)]
         if not files or self._loading:
             return
         if self.job:
@@ -1286,6 +1287,7 @@ class App(tk.Tk):
         self.config(cursor="watch")
         self.update_idletasks()
         try:
+            path = os.path.abspath(path)
             info = self.ff.probe(path, require_video=not audio)
         except ProbeError as e:
             self.config(cursor="")
@@ -1936,5 +1938,5 @@ def main(argv=None):
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
-    initial = argv[0] if argv and os.path.isfile(argv[0]) else None
+    initial = os.path.abspath(argv[0]) if argv and os.path.isfile(argv[0]) else None
     App(initial).mainloop()
