@@ -33,6 +33,17 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
 
+      - name: Put the files in a private draft release (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete store-upload --yes --cleanup-tag 2>/dev/null || true
+          gh release create store-upload dist/release/* --draft --title "Store upload (draft, not public)" \
+            --notes "Built from ${{ github.sha }}. Draft release: only visible to the repository owner." \
+            --target ${{ github.sha }}
+
       - name: Attach to the release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
