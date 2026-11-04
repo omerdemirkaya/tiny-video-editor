@@ -1,12 +1,13 @@
-"""Builds Tiny Video Editor for Windows and packs it for the Microsoft Store.
+"""Builds Tiny Video Editor for Windows (+ Microsoft Store) and Linux.
 
-Usage (on Windows):
+Usage (run on the system you build for):
     pip install pyinstaller
     python build.py                 # output: dist/release/
 
 Outputs:
-    TinyVideoEditor-windows-x64.zip              (unzip and run TinyVideoEditor.exe)
-    TinyVideoEditor-microsoft-store-upload.msix  (only for uploading to Partner Center)
+    Windows: TinyVideoEditor-windows-x64.zip              (unzip and run TinyVideoEditor.exe)
+             TinyVideoEditor-microsoft-store-upload.msix  (only for uploading to Partner Center)
+    Linux:   TinyVideoEditor-linux-x64.tar.gz             (unpack, run ./install.sh or ./TinyVideoEditor)
 
 FFmpeg is not stored in git (its DLLs are bigger than GitHub allows); if ffmpeg/bin is missing
 it is downloaded from the pinned FFmpeg build below. The MSIX step needs the Windows SDK
@@ -18,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -34,8 +36,11 @@ NAME = "TinyVideoEditor"
 DIST = ROOT / "dist"
 RELEASE = DIST / "release"
 FFMPEG_DIR = ROOT / "ffmpeg"
-FFMPEG_URL = ("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-              "ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip")
+IS_WIN = sys.platform == "win32"
+EXE = ".exe" if IS_WIN else ""
+FFMPEG_URL = ("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/" +
+              ("ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip" if IS_WIN
+               else "ffmpeg-n8.1-latest-linux64-gpl-shared-8.1.tar.xz"))
 
 # Microsoft Store (Partner Center -> Product management -> Product identity)
 STORE = {
@@ -48,6 +53,7 @@ STORE = {
 }
 MSIX_FILE = f"{NAME}-microsoft-store-upload.msix"
 ZIP_FILE = f"{NAME}-windows-x64.zip"
+LINUX_FILE = f"{NAME}-linux-x64.tar.gz"
 
 
 def version():
@@ -62,33 +68,50 @@ def run(cmd):
 
 # ------------------------------------------------------------------ FFmpeg
 def ensure_ffmpeg():
-    exe = FFMPEG_DIR / "bin" / "ffmpeg.exe"
-    if exe.is_file() and (FFMPEG_DIR / "bin" / "ffplay.exe").is_file():
+    exe = FFMPEG_DIR / "bin" / f"ffmpeg{EXE}"
+    if exe.is_file() and (FFMPEG_DIR / "bin" / f"ffplay{EXE}").is_file():
         print("FFmpeg found:", exe)
         return
     print("Downloading FFmpeg:", FFMPEG_URL, flush=True)
     DIST.mkdir(parents=True, exist_ok=True)
-    zpath = DIST / "ffmpeg.zip"
+    zpath = DIST / ("ffmpeg.zip" if IS_WIN else "ffmpeg.tar.xz")
     with urllib.request.urlopen(FFMPEG_URL) as r, open(zpath, "wb") as fh:
         shutil.copyfileobj(r, fh)
     tmp = DIST / "ffmpeg-unpacked"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(zpath) as z:
-        z.extractall(tmp)
+    if IS_WIN:
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(tmp)
+    else:
+        with tarfile.open(zpath) as t:
+            t.extractall(tmp, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
     top = next(p for p in tmp.iterdir() if p.is_dir())
     shutil.rmtree(FFMPEG_DIR, ignore_errors=True)
     (FFMPEG_DIR / "bin").mkdir(parents=True)
     for f in (top / "bin").iterdir():
         shutil.copy2(f, FFMPEG_DIR / "bin" / f.name)
+    if not IS_WIN:
+        # shared build: binaries find their libraries through RPATH=$ORIGIN/../lib
+        (FFMPEG_DIR / "lib").mkdir()
+        for f in (top / "lib").iterdir():
+            if f.name.endswith(".so") or f.is_dir():
+                continue                                   # dev symlinks / pkgconfig not needed
+            if f.is_symlink():
+                os.symlink(os.readlink(f), FFMPEG_DIR / "lib" / f.name)
+            else:
+                shutil.copy2(f, FFMPEG_DIR / "lib" / f.name)
     shutil.copy2(top / "LICENSE.txt", FFMPEG_DIR / "LICENSE.txt")
     (FFMPEG_DIR / "README.txt").write_text(
-        "FFmpeg 8.1 (Windows 64-bit, GPL, shared build) from https://github.com/BtbN/FFmpeg-Builds\n"
+        f"FFmpeg 8.1 ({'Windows' if IS_WIN else 'Linux'} 64-bit, GPL, shared build) from https://github.com/BtbN/FFmpeg-Builds\n"
         "Used by Tiny Video Editor for all video and audio processing.\n"
         "License: see LICENSE.txt (GPL). Source code: https://ffmpeg.org/download.html\n",
         encoding="utf-8")
-    for f in ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe"):
-        if not (FFMPEG_DIR / "bin" / f).is_file():
-            raise SystemExit(f"{f} is missing from the FFmpeg download")
+    for f in ("ffmpeg", "ffprobe", "ffplay"):
+        path = FFMPEG_DIR / "bin" / f"{f}{EXE}"
+        if not path.is_file():
+            raise SystemExit(f"{path.name} is missing from the FFmpeg download")
+        if not IS_WIN:
+            path.chmod(0o755)
 
 
 # --------------------------------------------------------------- PyInstaller
@@ -119,16 +142,57 @@ def pyinstaller(ver):
     sep = os.pathsep
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
            "--onedir", "--name", NAME, "--distpath", DIST / "app", "--workpath", ROOT / "build",
-           "--specpath", ROOT / "build", "--icon", ROOT / "assets" / "app.ico",
-           "--version-file", windows_version_file(ver),
+           "--specpath", ROOT / "build",
            "--exclude-module", "PIL", "--exclude-module", "numpy"]
+    if IS_WIN:
+        cmd += ["--icon", ROOT / "assets" / "app.ico", "--version-file", windows_version_file(ver)]
     for size in (32, 64, 256):
         cmd += ["--add-data", f"{ROOT / 'assets' / f'icon-{size}.png'}{sep}assets"]
     cmd.append(ROOT / "main.py")
     run(cmd)
     app = DIST / "app" / NAME
-    shutil.copytree(FFMPEG_DIR, app / "ffmpeg")      # next to the exe: the app finds it there
+    shutil.copytree(FFMPEG_DIR, app / "ffmpeg", symlinks=True)   # next to the exe: the app finds it there
     return app
+
+
+def package_linux(app):
+    """tar.gz with the app folder, an icon and an install.sh that adds a menu entry."""
+    folder = f"{NAME}-linux-x64"
+    stage = DIST / folder
+    shutil.rmtree(stage, ignore_errors=True)
+    shutil.copytree(app, stage, symlinks=True)
+    shutil.copy2(ROOT / "assets" / "icon-256.png", stage / "tiny-video-editor.png")
+    install = stage / "install.sh"
+    install.write_text("""#!/bin/sh
+# Installs Tiny Video Editor for the current user (no admin rights needed) and adds it to the menu.
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+DEST="$HOME/.local/share/tiny-video-editor"
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$HOME/.local/share/icons"
+rm -rf "$DEST"
+cp -r "$DIR" "$DEST"
+ln -sf "$DEST/TinyVideoEditor" "$HOME/.local/bin/tiny-video-editor"
+cp "$DIR/tiny-video-editor.png" "$HOME/.local/share/icons/tiny-video-editor.png"
+cat > "$HOME/.local/share/applications/tiny-video-editor.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Tiny Video Editor
+Comment=Cut, combine and shrink videos
+Exec="$DEST/TinyVideoEditor" %f
+Icon=$HOME/.local/share/icons/tiny-video-editor.png
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;
+Terminal=false
+EOF
+update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+echo "Tiny Video Editor is installed. Open it from your applications menu."
+""", encoding="utf-8")
+    install.chmod(0o755)
+    (stage / NAME).chmod(0o755)
+    out = RELEASE / LINUX_FILE
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(stage, arcname=folder)
+    return out
 
 
 def package_zip(app):
@@ -238,14 +302,14 @@ def package_msix(ver, app):
 
 def smoke_test(app):
     """Make sure the packed app can find and run its FFmpeg."""
-    exe = app / "ffmpeg" / "bin" / "ffmpeg.exe"
+    exe = app / "ffmpeg" / "bin" / f"ffmpeg{EXE}"
     subprocess.run([str(exe), "-hide_banner", "-version"], check=True, capture_output=True)
     print("FFmpeg inside the build works.")
 
 
 def build():
-    if sys.platform != "win32":
-        raise SystemExit("Please run build.py on Windows (GitHub Actions does this for you).")
+    if sys.platform not in ("win32", "linux"):
+        raise SystemExit("Please run build.py on Windows or Linux (GitHub Actions does this for you).")
     ver = version()
     shutil.rmtree(DIST / "app", ignore_errors=True)
     shutil.rmtree(DIST / "msix", ignore_errors=True)
@@ -255,10 +319,13 @@ def build():
     ensure_ffmpeg()
     app = pyinstaller(ver)
     smoke_test(app)
-    outputs = [package_zip(app)]
-    msix = package_msix(ver, app)
-    if msix:
-        outputs.append(msix)
+    if IS_WIN:
+        outputs = [package_zip(app)]
+        msix = package_msix(ver, app)
+        if msix:
+            outputs.append(msix)
+    else:
+        outputs = [package_linux(app)]
     print()
     for out in outputs:
         print(f"Ready: {out}  ({out.stat().st_size / 1e6:.1f} MB)")

@@ -1,5 +1,8 @@
 name: Build Tiny Video Editor
 
+# Runs when a release is published (files are attached to that release for the website),
+# or by hand from the Actions tab (files go to a private draft release called "store-upload").
+
 on:
   workflow_dispatch:
   release:
@@ -9,14 +12,25 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, label: windows-x64 }
+          - { os: ubuntu-22.04,   label: linux-x64 }
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Tk libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tk-dev
 
       - name: Dependencies
         run: |
@@ -29,24 +43,35 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TinyVideoEditor-windows-x64
+          name: TinyVideoEditor-${{ matrix.label }}
           path: dist/release/*
           if-no-files-found: error
 
-      - name: Put the files in a private draft release (manual runs)
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - run: ls -la out
+
+      - name: Attach downloads to the published release
+        if: github.event_name == 'release'
+        # the .msix is only for Partner Center, so it is not offered on the public release
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" --clobber \
+            out/TinyVideoEditor-windows-x64.zip out/TinyVideoEditor-linux-x64.tar.gz
+
+      - name: Keep everything in a private draft release (manual runs)
         if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete store-upload --yes --cleanup-tag 2>/dev/null || true
-          gh release create store-upload dist/release/* --draft --title "Store upload (draft, not public)" \
+          gh release create store-upload out/* --draft --title "Store upload (draft, not public)" \
             --notes "Built from ${{ github.sha }}. Draft release: only visible to the repository owner." \
             --target ${{ github.sha }}
-
-      - name: Attach to the release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: dist/release/*

@@ -6,9 +6,9 @@ A small multi-track video editor written in Python + Tkinter. All heavy work is 
 ## Setup
 
 1. **Python 3.8+** (the python.org installer for Windows includes Tkinter). No pip packages needed.
-2. **FFmpeg is included** in `ffmpeg\bin` (FFmpeg 8.1, Windows 64-bit, from
-   https://github.com/BtbN/FFmpeg-Builds — license in `ffmpeg\LICENSE.txt`). Keep that folder
-   next to `main.py`; the program always uses it, whatever is installed on the computer.
+2. **FFmpeg** comes with the program in the `ffmpeg` folder (FFmpeg 8.1 from
+   https://github.com/BtbN/FFmpeg-Builds — license in `ffmpeg/LICENSE.txt`). The program always
+   uses it, whatever is installed on the computer. `build.py` downloads it if the folder is missing.
 
 ## Run
 
@@ -64,21 +64,55 @@ Undo / redo: Ctrl+Z / Ctrl+Y.
 - Export runs at low priority, uses the graphics card if it works (falls back to the processor
   automatically), and *Fast cut* finishes in seconds.
 
-## Building and the Microsoft Store
+## Building, releases and the Microsoft Store
 
-`build.py` makes the Windows build and the Store package (it downloads FFmpeg into `ffmpeg\` if
-it is missing — FFmpeg is not kept in git because its DLLs are larger than GitHub allows):
+`build.py` builds for the system it runs on and downloads the matching FFmpeg build into `ffmpeg/`
+if it is missing (FFmpeg is not kept in git because its libraries are larger than GitHub allows):
 
 ```
 pip install pyinstaller
-python build.py        # dist/release/TinyVideoEditor-windows-x64.zip and ...-microsoft-store-upload.msix
+python build.py
 ```
 
-GitHub Actions does the same on every published release (`.github/workflows/build.yml`):
-**Actions → Build Tiny Video Editor → Run workflow**, then download the artifact.
-Upload the `.msix` to Partner Center; it is unsigned on purpose — the Store signs it.
-Bump `__version__` in `tve/__init__.py` for every Store update. Listing texts and screenshots are in
-`store/`. Store package identity is in the `STORE` block of `build.py`.
+| System | Output (`dist/release/`) | What it is |
+|---|---|---|
+| Windows | `TinyVideoEditor-windows-x64.zip` | Unzip, run `TinyVideoEditor.exe` |
+| Windows | `TinyVideoEditor-microsoft-store-upload.msix` | **Only** for Partner Center (unsigned; the Store signs it) |
+| Linux | `TinyVideoEditor-linux-x64.tar.gz` | Unpack, run `./install.sh` (adds a menu entry) or `./TinyVideoEditor` |
+
+GitHub Actions (`.github/workflows/build.yml`) builds Windows and Linux together:
+
+- **Publishing a new version:** bump `__version__` in `tve/__init__.py` (the Store requires a
+  higher version every time), then on GitHub go to **Releases → Draft a new release**, type a tag
+  such as `v1.0.1`, choose *Create new tag*, give it a title and press **Publish release**.
+  About 10 minutes later the Windows `.zip` and the Linux `.tar.gz` are attached to that release.
+- **Store package only / test build:** **Actions → Build Tiny Video Editor → Run workflow**.
+  All files, including the `.msix`, go to a private draft release named `store-upload`.
+
+### Download links for the website
+
+```
+Windows (Microsoft Store): https://apps.microsoft.com/detail/9PDK46Z2RHDS
+Linux (always the newest release):
+https://github.com/omerdemirkaya/tiny-video-editor/releases/latest/download/TinyVideoEditor-linux-x64.tar.gz
+Windows without the Store (optional):
+https://github.com/omerdemirkaya/tiny-video-editor/releases/latest/download/TinyVideoEditor-windows-x64.zip
+```
+
+### Installing on Linux
+
+```
+tar -xzf TinyVideoEditor-linux-x64.tar.gz
+cd TinyVideoEditor-linux-x64
+./install.sh
+```
+
+Then open **Tiny Video Editor** from the applications menu. Works on 64-bit Linux with glibc 2.35 or
+newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, Linux Mint 21+). Drag & drop from the file manager is
+only available on Windows; on Linux use *Open another video* / *Add media*.
+
+Listing texts and screenshots are in `store/`; the package identity is in the `STORE` block of
+`build.py`.
 
 ## Files
 
@@ -94,7 +128,7 @@ Bump `__version__` in `tve/__init__.py` for every Store update. Listing texts an
 | `tve/operations.py` | Effect presets and choice lists |
 | `tve/dnd.py` | Drag & drop from Windows Explorer (no extra packages) |
 | `tve/dialogs.py`, `tve/theme.py` | Small forms; dark theme, tooltips, scrolling panels, logo |
-| `ffmpeg/` | Bundled FFmpeg 8.1 (ffmpeg, ffprobe, ffplay + DLLs) |
+| `ffmpeg/` | FFmpeg 8.1 (ffmpeg, ffprobe, ffplay + libraries), downloaded by `build.py` |
 | `tve/timeutil.py` | Time formatting |
 
 
