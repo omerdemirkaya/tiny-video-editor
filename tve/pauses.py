@@ -112,6 +112,11 @@ def find_pauses(levels: List[float], total: float, min_pause: float = 0.5,
         else:
             i += 1
 
+    if not any(voiced):
+        res.message = ("No speech was found on this track, so nothing would be left. "
+                       "Check that you chose the track with the voice.")
+        return res
+
     end = min(total, n * WIN)
     i = 0
     while i < n:

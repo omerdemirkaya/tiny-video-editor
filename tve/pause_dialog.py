@@ -236,16 +236,23 @@ class PauseDialog(tk.Toplevel):
         if n:
             self.result_var.set(f"Found {n} pause{'s' if n != 1 else ''}  ·  "
                                 f"{fmt_time(res.removed, 1)} will be removed")
-            new_len = max(0.0, self.app.project.end - res.removed)
+            total = self.app.project.end
+            new_len = max(0.0, total - res.removed)
+            warn = ""
+            if total > 0 and res.removed / total > 0.8:
+                warn = (f"⚠ This removes {res.removed / total:.0%} of the video. Make sure the "
+                        f"right track is chosen.  ")
             self.detail_var.set(
-                f"New length {fmt_time(new_len, 1)} (now {fmt_time(self.app.project.end, 1)}). "
+                f"{warn}New length {fmt_time(new_len, 1)} (now {fmt_time(total, 1)}). "
                 f"The red marks on the timeline show what will be cut. "
                 f"Speech ≈ {res.speech_db:.0f} dB, background ≈ {res.noise_db:.0f} dB.")
+            self.detail.configure(style="Err.TLabel" if warn else "Muted.TLabel")
             self.go.configure(text=f"Remove {n} pause{'s' if n != 1 else ''}")
             self.go.state(["!disabled"])
         else:
             self.result_var.set("No pauses to remove")
             self.detail_var.set(res.message)
+            self.detail.configure(style="Muted.TLabel")
             self.go.configure(text="Remove pauses")
             self.go.state(["disabled"])
         self._set_preview(res.ranges)

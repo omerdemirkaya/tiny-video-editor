@@ -11,6 +11,7 @@ Why it is fast and light:
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -30,6 +31,7 @@ HW_ENCODERS = {"nvenc": ("h264_nvenc", "hevc_nvenc"),
                "amf": ("h264_amf", "hevc_amf")}
 COPY_CONTAINERS = (".mp4", ".mov", ".m4v")
 SR = 48000
+SIZE_SAFETY = 0.88   # share of the size limit given to the encoders
 
 
 class BuildError(Exception):
@@ -180,6 +182,61 @@ class _Graph:
         return [a for arg in self.inputs for a in arg]
 
 
+# Clips that sit next to each other on a track, come from the same file in forward order and
+# have identical settings (typical after splitting or “Remove pauses”) are read as ONE input:
+# FFmpeg decodes that stretch once and drops the unwanted parts itself. This keeps the command
+# short (Windows allows ~32 000 characters) and uses one decoder instead of hundreds.
+RUN_MAX = 60   # FFmpeg expressions fail beyond ~100 terms, so a long run is split up
+_RUN_PROPS = ("path", "speed", "effect", "strength", "text", "rotate", "layout", "volume",
+              "muted", "custom")
+
+
+def _pieces(track, w0, w1, skip=None):
+    out = []
+    for c in track.sorted():
+        cs, ce = max(c.start, w0), min(c.end, w1)
+        if ce - cs < 1e-3 or (skip and skip(c)):
+            continue
+        out.append((c, cs, ce, c.src_at(cs), c.src_at(ce)))
+    return out
+
+
+def _runs(pieces):
+    runs = []
+    for p in pieces:
+        if runs:
+            q = runs[-1][-1]
+            if (len(runs[-1]) < RUN_MAX and abs(p[1] - q[2]) < 1e-3 and p[3] >= q[4] - 1e-3
+                    and all(getattr(p[0], k) == getattr(q[0], k) for k in _RUN_PROPS)):
+                runs[-1].append(p)
+                continue
+        runs.append([p])
+    return runs
+
+
+def _run_input(g: "_Graph", run, audio: bool):
+    """Adds the input for a run. Returns (input index, filters that keep only the run's
+    parts and close the gaps between them)."""
+    c, s0 = run[0][0], run[0][3]
+    span = run[-1][4] - s0
+    i = g.add_input(c.path, s0, span + 0.2)
+    if len(run) == 1:
+        return i, []
+    segs = [(round(p[3] - s0, 4), round(p[4] - s0, 4)) for p in run]
+    sel = "+".join(f"between(t,{_num(a)},{_num(b)})" for a, b in segs)
+    offs = "+".join(f"gte(T,{_num(segs[k][0])})*{_num(segs[k][0] - segs[k - 1][1])}"
+                    for k in range(1, len(segs)))
+    if audio:
+        # 10 ms audio frames so the cut points are fine-grained; timestamps keep the sound
+        # locked to the picture, aresample fills/drops the few ms at each joint
+        # (no PTS-STARTPTS here: after -ss the cut point is already time 0, and shifting by
+        # the first frame's few ms would let a frame of a removed part slip in)
+        return i, [f"aresample={SR}", "asetnsamples=n=480:p=0",
+                   f"aselect='{sel}'", f"asetpts='PTS-({offs})/TB'",
+                   f"aresample={SR}:async=1:min_hard_comp=0.005:first_pts=0"]
+    return i, [f"select='{sel}'", f"setpts='PTS-({offs})/TB'"]
+
+
 def _layout_filters(layout: str, W: int, H: int, alpha: bool) -> List[str]:
     pad_color = "black@0" if alpha else "black"
     if layout == "fit":
@@ -204,18 +261,18 @@ _ROTATE = {"cw": ["transpose=1"], "ccw": ["transpose=2"], "180": ["hflip", "vfli
 def _video_track(g: _Graph, project: Project, track, w0, w1, W, H, F, alpha) -> Optional[Tuple[str, list]]:
     pix = "yuva420p" if alpha else "yuv420p"
     segs, active, pos = [], [], w0
-    for c in track.sorted():
-        cs, ce = max(c.start, w0), min(c.end, w1)
-        if ce - cs < 1e-3:
-            continue
+    for run in _runs(_pieces(track, w0, w1)):
+        c, cs, ce = run[0][0], run[0][1], run[-1][2]
         if cs - pos > 1e-3:
             segs.append(_video_gap(g, cs - pos, W, H, F, alpha))
-        d = ce - cs
-        i = g.add_input(c.path, c.src_at(cs), d * c.speed + 0.2)
-        f = ["setpts=PTS-STARTPTS"]
+        d = sum(p[2] - p[1] for p in run)
+        # after -ss the cut point is already time 0; do not shift by the first frame's own
+        # offset (that moved picture up to ~2 frames ahead of the sound). fps=...:start_time=0
+        # fills from 0 on an exact frame grid instead.
+        i, f = _run_input(g, run, audio=False)
         if abs(c.speed - 1) > EPS:
             f.append(f"setpts=PTS/{_num(c.speed)}")
-        f.append(f"fps={_num(F)}")
+        f.append(f"fps={_num(F)}:start_time=0")
         f += _ROTATE.get(c.rotate or "", [])
         if alpha:
             f.append("format=yuva420p")
@@ -254,15 +311,15 @@ def _audio_track(g: _Graph, project: Project, track, w0, w1,
                  analysis: bool = False) -> Optional[str]:
     """analysis=True hears every clip as recorded (ignores mute, volume and custom filters)."""
     segs, pos, any_clip = [], w0, False
-    for c in track.sorted():
-        cs, ce = max(c.start, w0), min(c.end, w1)
-        if ce - cs < 1e-3 or (c.muted and not analysis):
-            continue
+    pieces = _pieces(track, w0, w1, skip=None if analysis else (lambda c: c.muted))
+    for run in _runs(pieces):
+        c, cs, ce = run[0][0], run[0][1], run[-1][2]
         if cs - pos > 1e-3:
             segs.append(_audio_gap(g, cs - pos))
-        d = ce - cs
-        i = g.add_input(c.path, c.src_at(cs), d * c.speed + 0.2)
-        f = ["asetpts=PTS-STARTPTS"] + atempo_chain(c.speed)
+        d = sum(p[2] - p[1] for p in run)
+        i, f = _run_input(g, run, audio=True)
+        f = (f or [f"aresample={SR}:async=1:min_hard_comp=0.005:first_pts=0"]) + \
+            atempo_chain(c.speed)
         if abs(c.volume - 1) > EPS and not analysis:
             f.append(f"volume={_num(c.volume)}")
         if c.custom.strip() and not analysis:
@@ -517,20 +574,21 @@ def build_export(project: Project, ps: ProjectSettings, st: OutputSettings, out_
         audio_k = AUDIO_KBPS[st.quality]
         vkbps = None
         if st.target_mb:
-            total_k = st.target_mb * 8192 / max(dur, 0.1) * 0.96
+            # single-pass encoders overshoot by up to ~10 %, so aim a bit lower
+            total_k = st.target_mb * 8192 / max(dur, 0.1) * SIZE_SAFETY
             if a:
                 audio_k = 128 if total_k > 900 else (96 if total_k > 400 else 64)
             vkbps = int(total_k - (audio_k if a else 0))
             if vkbps < 80:
-                need = (80 + (audio_k if a else 0)) * dur / 8192 / 0.96
+                need = (80 + (audio_k if a else 0)) * dur / 8192 / SIZE_SAFETY
                 raise BuildError(f"The size limit is too small for this length.\n"
                                  f"Use at least about {need:.1f} MB or make the video shorter.")
         if hw:
             uses_hw = True
             args += ["-c:v", HW_ENCODERS[hw][1 if hevc else 0]]
             if vkbps:
-                args += ["-b:v", f"{vkbps}k", "-maxrate", f"{int(vkbps * 1.5)}k",
-                         "-bufsize", f"{vkbps * 2}k"]
+                args += ["-b:v", f"{vkbps}k", "-maxrate", f"{int(vkbps * 1.2)}k",
+                         "-bufsize", f"{vkbps}k"]
                 if hw == "amf":
                     args += ["-rc", "vbr_peak"]
             else:
@@ -550,8 +608,8 @@ def build_export(project: Project, ps: ProjectSettings, st: OutputSettings, out_
             else:
                 args += ["-c:v", "libx264", "-preset", X26X_PRESET[st.speed]]
             if vkbps:
-                args += ["-b:v", f"{vkbps}k", "-maxrate", f"{int(vkbps * 1.5)}k",
-                         "-bufsize", f"{vkbps * 2}k"]
+                args += ["-b:v", f"{vkbps}k", "-maxrate", f"{int(vkbps * 1.2)}k",
+                         "-bufsize", f"{vkbps}k"]
             else:
                 args += ["-crf", str((X265_CRF if hevc else X264_CRF)[st.quality])]
                 if st.quality == "original" and st.src_vkbps:
@@ -566,8 +624,22 @@ def build_export(project: Project, ps: ProjectSettings, st: OutputSettings, out_
         args += ["-movflags", "+faststart"]
         size = (W, H)
     args.append(out_path)
+    check_command_length(args)
     return BuildResult(args=args, duration=dur, size=size, notes=notes, files=g.files,
                        uses_hw=uses_hw)
+
+
+WIN_CMD_LIMIT = 30000   # Windows refuses command lines over 32 767 characters
+
+
+def check_command_length(args):
+    if IS_WIN and len(subprocess.list2cmdline(["ffmpeg.exe"] + list(args))) > WIN_CMD_LIMIT:
+        n = args.count("-i")
+        raise BuildError(f"This project has too many separate pieces for Windows to export "
+                         f"in one go ({n} inputs).\nPieces next to each other from the same "
+                         f"video are joined automatically when they have the same settings "
+                         f"(effect, text, speed, volume…). Give neighbouring pieces the same "
+                         f"settings, or export the video in two parts.")
 
 
 def copy_segments(project: Project, ps: ProjectSettings):
