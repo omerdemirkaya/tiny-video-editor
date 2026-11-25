@@ -80,17 +80,20 @@ def find_pauses(levels: List[float], total: float, min_pause: float = 0.5,
     speech = _percentile(sv, 0.95)
     res.noise_db, res.speech_db = noise, speech
     gap = speech - noise
-    if speech <= FLOOR_DB + 1:
-        res.message = "The sound is completely silent."
-        return res
-    if gap < 12:
-        res.message = ("Speech and background are almost equally loud, so no clear pauses "
-                       "were found. Try “Remove more”.") if sensitivity != "more" else \
-                      "No clear pauses were found in this recording."
-        if sensitivity != "more" or gap < 6:
-            return res
-    thr = noise + SENSITIVITY.get(sensitivity, 0.3) * gap
-    thr = min(thr, speech - 10)
+    digital_silence = (len(levels) - len(sv)) / len(levels)
+    if gap < 12 and digital_silence >= 0.02:
+        # clean recording: the pauses are completely silent (noise gate / edited audio),
+        # so everything that has any sound at all is speech
+        thr = max(FLOOR_DB + 1, noise - 20)
+    else:
+        if gap < 12:
+            res.message = ("Speech and background are almost equally loud, so no clear "
+                           "pauses were found. Try “Remove more”.") if sensitivity != "more" \
+                else "No clear pauses were found in this recording."
+            if sensitivity != "more" or gap < 6:
+                return res
+        thr = noise + SENSITIVITY.get(sensitivity, 0.3) * gap
+        thr = min(thr, speech - 10)
     res.threshold_db = thr
 
     voiced = [v > thr for v in levels]
