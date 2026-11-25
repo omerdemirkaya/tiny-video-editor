@@ -28,6 +28,7 @@ from .builder import (BuildError, OutputSettings, ProjectSettings, build_export,
                       build_play, copy_segments, output_extension, preview_size)
 from .dialogs import ask_form
 from .dnd import hook_file_drop
+from .pause_dialog import PauseDialog
 from .ffmpeg_utils import HW_NAMES, IS_WIN, FFJob, FFmpeg, ProbeError, find_ffmpeg, popen_kwargs
 from .operations import (ASPECT_CHOICES, FILTER_HAS_STRENGTH, FILTER_PRESETS, FPS_CHOICES,
                          LAYOUT_CHOICES, ROTATE_CHOICES, SPEED_CHOICES, TEXT_COLORS,
@@ -281,6 +282,8 @@ class App(tk.Tk):
         self.job_ctx = None
         self.job_progress = 0
         self.export_dlg = None
+        self.pause_dlg = None
+        self.pause_preview = None
         self.summary_error = False
         self.events = queue.Queue()
         self.maps = {}
@@ -476,7 +479,7 @@ class App(tk.Tk):
             bt.pack(side="left", padx=1)
             Tooltip(bt, tip)
         tk.Frame(tb, bg=BORDER, width=1, height=24).pack(side="left", padx=8)
-        sp = ttk.Button(tb, text="✂  Split", style="Tool.TButton", command=self.split)
+        sp = ttk.Button(tb, text="✂ Split", style="Tool.TButton", command=self.split)
         sp.pack(side="left")
         Tooltip(sp, "Split clips at the playhead or at the selected range (S)")
         hlp = tk.Canvas(tb, width=22, height=22, bg=PANEL, highlightthickness=0, cursor="hand2")
@@ -489,6 +492,12 @@ class App(tk.Tk):
         dl.pack(side="left")
         Tooltip(dl, "Delete the selected clips and close the gap (Del).\n"
                     "Shift+Del leaves an empty gap instead.")
+        pz = ttk.Button(tb, text="Remove pauses", style="Tool.TButton",
+                        command=self.open_pauses)
+        pz.pack(side="left", padx=(6, 0))
+        Tooltip(pz, "Find the quiet parts between speech and cut them out of every track, "
+                    "with a small safe zone so no word gets clipped.\n"
+                    "You see the result before anything is cut; Ctrl+Z undoes it.", wrap=320)
         self.undo_btn = ttk.Button(tb, text="↶", style="Head.TButton", width=2, command=self.undo)
         self.undo_btn.pack(side="left", padx=(8, 1))
         Tooltip(self.undo_btn, "Undo (Ctrl+Z)")
@@ -504,7 +513,7 @@ class App(tk.Tk):
             bt.pack(side="right", padx=1)
             Tooltip(bt, tip)
         tk.Frame(tb, bg=BORDER, width=1, height=24).pack(side="right", padx=8)
-        self.add_btn = ttk.Button(tb, text="+  Add media  ▾", style="Tool.TButton",
+        self.add_btn = ttk.Button(tb, text="+ Add media ▾", style="Tool.TButton",
                                   command=self._add_menu)
         self.add_btn.pack(side="right")
         Tooltip(self.add_btn, "Add another video on a new layer, join a video to the end, "
@@ -1658,6 +1667,32 @@ class App(tk.Tk):
                               hwaccel=hw, fast_copy=self.copy_var.get(),
                               low_priority=self.low_var.get(),
                               src_vkbps=info.vbitrate_kbps if info else None)
+
+    # ======================================================== remove pauses
+    def open_pauses(self):
+        if not self.project or self.job:
+            return
+        self.stop_play()
+        if self.pause_dlg is not None:
+            self.pause_dlg.lift()
+            return
+        if not any(t.clips for t in self.project.audio_tracks()):
+            messagebox.showinfo("Remove pauses", "There is no sound on the timeline, so there "
+                                                 "are no pauses to find.")
+            return
+        self.pause_dlg = PauseDialog(self)
+
+    def apply_pause_removal(self, ranges):
+        p = self.project
+        snap = p.snapshot()
+        t = self.cur_time
+        before = sum(max(0.0, min(b, t) - a) for a, b in ranges if a < t)
+        removed = p.remove_ranges(ranges)
+        self.selected, self.range = set(), None
+        self.commit_edit(snap, f"Removed {len(ranges)} pause{'s' if len(ranges) != 1 else ''} "
+                               f"({fmt_time(removed, 1)}).  Ctrl+Z to undo.")
+        self.seek(max(0.0, t - before))
+        self.timeline.fit()
 
     def open_export(self):
         if not self.project:

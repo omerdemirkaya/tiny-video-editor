@@ -34,19 +34,25 @@ python main.py "C:\Videos\clip.mp4"
 6. On the timeline: drag clips to move them (they snap to edges and the playhead), drag clip edges
    to trim, **Delete** removes and closes the gap (Shift+Delete keeps the gap), right-click for more.
    Alt+click selects only the video or only the sound; Ctrl+click selects several.
-7. **Drag & drop**: drop video or audio files from a folder onto a track (or anywhere in the
+7. **Remove pauses** (toolbar): finds the quiet parts between speech and cuts them out of every
+   track, so talking-head videos flow without gaps. The threshold adapts to each recording's
+   background noise; a safe zone (default 0.2 s) is kept before and after speech so no word is
+   clipped. Choose which audio track to listen to, the shortest pause to remove, the safe zone and
+   the sensitivity; the parts that will be cut are shown in red on the timeline before anything
+   happens, and Ctrl+Z undoes it. Tip: add background music *after* removing pauses.
+8. **Drag & drop**: drop video or audio files from a folder onto a track (or anywhere in the
    window). The app asks before adding them; tick *Don't ask me again* to skip the question
    (⚙ → *Ask before adding dropped files* turns it back on). Dropping a video on the start screen
    opens it.
-8. **+ Add media**: another video on a new layer (V2, V3), a video joined to the end, or music /
+9. **+ Add media**: another video on a new layer (V2, V3), a video joined to the end, or music /
    sound on a new audio track (A2, A3). Track headers: ◉ hide a video track, ♪ mute an audio
    track, × (or right-click) remove a track. Tracks that become empty are removed automatically.
    **Reorder tracks** by dragging a track name (⋮⋮ V2) up or down — e.g. drag V2 onto V1 to make
    it the bottom layer — or right-click it → *Move track up / down*. Clips can also be dragged up
    or down onto another track of the same kind (where it has room).
-9. **Project** panel: resolution, aspect ratio (crops from the center), frame rate, fade in/out,
+10. **Project** panel: resolution, aspect ratio (crops from the center), frame rate, fade in/out,
    sound leveling — all pre-filled with your video's own values.
-10. **Export video…**: MP4 (H.264 / H.265), MP3 or GIF, quality, optional size limit in MB,
+11. **Export video…**: MP4 (H.264 / H.265), MP3 or GIF, quality, optional size limit in MB,
    *Fast cut* (no re-encoding, when you only cut the original video), graphics card
    acceleration, low priority. The suggested file name is `new_video` (`new_video_2`, … if taken).
 
@@ -121,7 +127,8 @@ Listing texts and screenshots are in `store/`; the package identity is in the `S
 | `main.py` | Starter |
 | `tve/ui.py` | Welcome screen, editor window, inspector, export dialog, playback control |
 | `tve/timeline.py` | Multi-track timeline widget (range, clips, drag / trim, zoom) |
-| `tve/project.py` | Tracks, clips, split / delete / undo snapshots |
+| `tve/project.py` | Tracks, clips, split / delete / remove time ranges, undo snapshots |
+| `tve/pauses.py`, `tve/pause_dialog.py` | Pause detection (adaptive threshold, safe zone) and its window |
 | `tve/builder.py` | Turns the timeline into one FFmpeg command (export, preview frame, playback) |
 | `tve/player.py` | Live preview playback (video frames + sound via ffplay) |
 | `tve/ffmpeg_utils.py` | Finding FFmpeg, probing, thumbnails, waveforms, GPU detection, background jobs |

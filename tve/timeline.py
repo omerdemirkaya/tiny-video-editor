@@ -34,6 +34,7 @@ SNAP_PX = 8
 V_FILL, V_EDGE = "#26385c", "#3d5a91"
 A_FILL, A_EDGE = "#1d3d37", "#2f6b5e"
 ROW_A, ROW_B = "#181b21", "#1b1e25"
+CUT_FILL = "#4a1c24"   # parts that “Remove pauses” would cut
 
 
 class TimelineView(tk.Canvas):
@@ -175,6 +176,23 @@ class TimelineView(tk.Canvas):
                 if x1 < HEAD_W or x0 > W:
                     continue
                 self._draw_clip(c, tr, x0, x1, y, h, c.id in sel)
+
+        # “Remove pauses” preview: what would be cut
+        pv = getattr(self.app, "pause_preview", None)
+        if pv and rows:
+            ybot = rows[-1][1] + rows[-1][2]
+            for a, b in pv:
+                xa, xb = self.x_of(a), self.x_of(b)
+                if xb < HEAD_W or xa > W:
+                    continue
+                xa, xb = max(xa, HEAD_W), max(xb, xa + 2)
+                self.create_rectangle(xa, TRACKS_Y - 1, xb, ybot, fill=CUT_FILL,
+                                      outline=DANGER)
+                self.create_rectangle(xa, TRACKS_Y - 5, xb, TRACKS_Y - 1, fill=DANGER,
+                                      outline="")
+                if xb - xa > 22:
+                    self.create_text((xa + xb) / 2, (TRACKS_Y + ybot) / 2, text="✂",
+                                     fill=DANGER, font=font(11, "bold"))
 
         # range overlay
         rng = self.app.range

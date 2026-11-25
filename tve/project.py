@@ -7,6 +7,7 @@ Times:
 """
 from __future__ import annotations
 
+import bisect
 import copy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -213,6 +214,72 @@ class Project:
             for c in t.clips:
                 if c.start < 0:
                     c.start = 0.0
+
+    def remove_ranges(self, ranges) -> float:
+        """Cut the given timeline ranges [(a, b), ...] out of EVERY track and close the gaps,
+        so picture and sound stay in sync. Clips are split where needed; linked video/sound
+        pieces stay linked. Returns the total removed time."""
+        rs = []
+        for a, b in sorted((max(0.0, a), b) for a, b in ranges if b - a > EPS):
+            if rs and a <= rs[-1][1] + EPS:
+                rs[-1][1] = max(rs[-1][1], b)
+            else:
+                rs.append([a, b])
+        if not rs:
+            return 0.0
+        starts = [a for a, _ in rs]
+        cum = [0.0]
+        for a, b in rs:
+            cum.append(cum[-1] + b - a)
+
+        def removed_before(t):            # how much is removed before timeline time t
+            i = bisect.bisect_right(starts, t) - 1
+            if i < 0:
+                return 0.0
+            a, b = rs[i]
+            return cum[i] + min(b, t) - a
+
+        new_ids = {}                      # (old clip id, new start) -> new clip id
+        old_links = {}
+        for tr in self.tracks:
+            out = []
+            for c in tr.sorted():
+                pieces, pos = [], c.start
+                i = max(0, bisect.bisect_right(starts, c.start) - 1)
+                while i < len(rs) and rs[i][0] < c.end:
+                    a, b = rs[i]
+                    if b > pos:
+                        if a > pos:
+                            pieces.append((pos, min(a, c.end)))
+                        pos = max(pos, b)
+                    i += 1
+                if pos < c.end:
+                    pieces.append((pos, c.end))
+                for s0, e0 in pieces:
+                    if e0 - s0 < 0.02:
+                        continue
+                    n = copy.deepcopy(c)
+                    n.id = self.new_id()
+                    n.src_in, n.src_out = c.src_at(s0), c.src_at(e0)
+                    n.start = s0 - removed_before(s0)
+                    n.link = None
+                    key = round(n.start, 4)
+                    new_ids[(c.id, key)] = n.id
+                    old_links[n.id] = (c.link, key)
+                    out.append(n)
+            tr.clips = out
+        for tr in self.tracks:            # re-link pieces of linked clips that start together
+            for n in tr.clips:
+                old, key = old_links.get(n.id, (None, None))
+                if old is not None:
+                    n.link = new_ids.get((old, key))
+        for tr in self.tracks:            # links must be mutual
+            for n in tr.clips:
+                if n.link is not None:
+                    p = self.clip(n.link)
+                    if p is None or p.link != n.id:
+                        n.link = None
+        return cum[-1]
 
     def unlink(self, clip: Clip) -> None:
         p = self.linked(clip)

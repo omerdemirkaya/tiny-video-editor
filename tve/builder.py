@@ -250,20 +250,22 @@ def _video_gap(g: _Graph, d, W, H, F, alpha) -> str:
     return lab
 
 
-def _audio_track(g: _Graph, project: Project, track, w0, w1) -> Optional[str]:
+def _audio_track(g: _Graph, project: Project, track, w0, w1,
+                 analysis: bool = False) -> Optional[str]:
+    """analysis=True hears every clip as recorded (ignores mute, volume and custom filters)."""
     segs, pos, any_clip = [], w0, False
     for c in track.sorted():
         cs, ce = max(c.start, w0), min(c.end, w1)
-        if ce - cs < 1e-3 or c.muted:
+        if ce - cs < 1e-3 or (c.muted and not analysis):
             continue
         if cs - pos > 1e-3:
             segs.append(_audio_gap(g, cs - pos))
         d = ce - cs
         i = g.add_input(c.path, c.src_at(cs), d * c.speed + 0.2)
         f = ["asetpts=PTS-STARTPTS"] + atempo_chain(c.speed)
-        if abs(c.volume - 1) > EPS:
+        if abs(c.volume - 1) > EPS and not analysis:
             f.append(f"volume={_num(c.volume)}")
-        if c.custom.strip():
+        if c.custom.strip() and not analysis:
             f.append(c.custom.strip())
         f += [f"aresample={SR}", "aformat=sample_fmts=fltp:channel_layouts=stereo",
               "apad", f"atrim=duration={_num(d)}", "asetpts=PTS-STARTPTS"]
@@ -386,6 +388,38 @@ def _base_args(progress: bool = True) -> List[str]:
 def _check(project: Project):
     if project.end < 0.05:
         raise BuildError("The timeline is empty. Add or restore at least one clip.")
+
+
+# ------------------------------------------------------- level scan
+LEVEL_WINDOW = 0.02   # seconds per loudness measurement
+LEVEL_KEY = "lavfi.astats.Overall.RMS_level"
+
+
+def build_level_scan(project: Project, tracks):
+    """Command that prints the loudness (RMS dB) of the given audio tracks every 20 ms,
+    in timeline time, to stdout. Used to find pauses in speech.
+    Returns (args, files, duration) or None if those tracks have no sound."""
+    T = project.end
+    if T < 0.05:
+        return None
+    g = _Graph()
+    labs = [lab for tr in tracks for lab in [_audio_track(g, project, tr, 0.0, T, analysis=True)]
+            if lab]
+    if not labs:
+        return None
+    if len(labs) == 1:
+        mix = labs[0]
+    else:
+        mix = g.label("mix")
+        g.chains.append("".join(f"[{x}]" for x in labs) +
+                        f"amix=inputs={len(labs)}:duration=longest:normalize=0[{mix}]")
+    n = int(round(16000 * LEVEL_WINDOW))
+    scan = (f"[{mix}]atrim=duration={_num(T)},aformat=channel_layouts=mono,aresample=16000,"
+            f"asetnsamples=n={n}:p=0,astats=metadata=1:reset=1:measure_perchannel=none:"
+            f"measure_overall=RMS_level,ametadata=mode=print:key={LEVEL_KEY}:file=-[lvl]")
+    args = _base_args(False) + g.input_args() + _graph_args(g, scan)
+    args += ["-map", "[lvl]", "-f", "null", "-"]
+    return args, g.files, T
 
 
 # ------------------------------------------------------------ preview
